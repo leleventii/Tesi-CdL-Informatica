@@ -1,49 +1,19 @@
-"""
-core.py — Motore di simulazione PCN (Ottimizzato NumPy)
-=========================================================
-Implementa esattamente Algorithm 1 del paper arXiv:2511.16376.
-
-Concetti chiave:
-- τ (tau): numero di pagamenti completati prima che la liquidità di un qualsiasi arco 
-  scenda a zero (bmin(e) == 0).
-- Il pagamento viene SEMPRE eseguito forzatamente, anche se l'ultimo step porta il bilancio a 0.
-- Il routing è topologico puro: ignora completamente lo stato dei bilanci, simulando
-  così il comportamento "miope" del routing di Lightning Network.
-
-OTTIMIZZAZIONE:
-  I bilanci sono mantenuti in una matrice NumPy n×n (int64) anziché in un dizionario Python.
-  Il check di failure usa np.minimum vettorizzato (C-level) anziché un for-loop Python
-  con ~5000 dict lookups. Speedup stimato: 3-5× sul hot path per n≥50.
-"""
-
 import random
 import numpy as np
 import networkx as nx
-
-
 # ─────────────────────────────────────────────────
 #  Pre-calcolo shortest path (una volta per grafo)
 # ─────────────────────────────────────────────────
 
 def precompute_paths(G):
-    """
-    Calcola in anticipo tutti gli shortest path (percorsi minimi) per ogni
-    coppia sorgente-destinazione (s, d) con s != d.
-
-    Ottimizzazione: facciamo questo calcolo una sola volta all'avvio dell'esperimento
-    invece che ad ogni singola transazione, risparmiando enormi quantità di tempo.
-
-    Returns
-    -------
-    dict  paths[(s, d)] = lista di path, dove ogni path è semplicemente una lista ordinata di nodi.
-    """
-    nodes = list(G.nodes())
+    #Dato un grafo G, precalcola tutti gli shortest paths per ogni coppia di nodo
+    #Restituisce un dizionario di paths
+    nodi = list(G.nodes())
     paths = {}
-    for s in nodes:
-        for d in nodes:
-            if s != d:
-                # nx.all_shortest_paths restituisce tutti i percorsi es aequo più corti
-                paths[(s, d)] = list(nx.all_shortest_paths(G, s, d))
+    for sorgente in nodi:
+        for destinazione in nodi:
+            if sorgente != destinazione:
+                paths[(sorgente, destinazione)] = list(nx.all_shortest_paths(G, sorgente, destinazione))
     return paths
 
 
@@ -51,44 +21,41 @@ def precompute_paths(G):
 #  Algoritmo di Rebalancing Probabilistico (Widest Path su C/2)
 # ─────────────────────────────────────────────────
 
-def get_best_cycle(C_half, source, target, n):
-    """
-    Trova il percorso con la massima capacità stimata (Widest Path probabilistico) da source a target.
-    Usa la matrice statica C_half (C[u,v]/2) per garantire la privacy dei bilanci reali.
-    """
-    dist = np.zeros(n, dtype=np.int64)
-    dist[source] = 999999999
-    parent = np.full(n, -1, dtype=np.int64)
-    visited = np.zeros(n, dtype=bool)
+def get_best_cycle(meta_capacita_pubbliche, sorgente, destinazione, numNodi):
+    #Trovo il percorso con massima capacità stimata, usando un Widest Path con Euristica basata sulla metà della capacità pubblica
+    dist = np.zeros(numNodi, dtype=np.int64) #inizializzo un vettore c-level di capacità con n zeri, essenzialmente dentro dist[u] conservo la capacità stimata del percorso più capiente trovato finora per arrivare in u.
+    dist[sorgente] = np.iinfo(np.int64).max #ora il nodo sorgente ha capienza infinita
+    parent = np.full(numNodi, -1, dtype=np.int64) #inizializzo vettore dei predecessori per ricostruire il percorso, inizializzo a -1 per indicare che non c'è predecessore (sono identificati con indici)
+    visitati = np.zeros(numNodi, dtype=bool) #vettore booleano per memorizzare se un nodo è stato visitato
     
-    for _ in range(n):
+    for _ in range(numNodi):
         # np.where vettorizzato per ignorare i nodi già visitati
-        unvisited_dist = np.where(visited, -1, dist)
-        u = np.argmax(unvisited_dist)
-        max_d = unvisited_dist[u]
+        capacita_non_visitati = np.where(visitati, -1, dist) #Imposto a -1 tutti i nodi già visitati 
+        u = np.argmax(capacita_non_visitati) #prende il nodo u con capacità massima tra i non visitati
+        max_capacita_corrente = capacita_non_visitati[u]
                 
-        if max_d <= 0 or u == target:
+        if max_capacita_corrente <= 0 or u == destinazione:
             break
             
-        visited[u] = True
+        visitati[u] = True
         
-        cap = C_half[u, :]
+        cap = meta_capacita_pubbliche[u, :]
         proposed = np.minimum(dist[u], cap)
         
-        update_mask = (~visited) & (proposed > dist)
+        update_mask = (~visitati) & (proposed > dist)
         dist[update_mask] = proposed[update_mask]
         parent[update_mask] = u
         
-    if dist[target] == 0:
+    if dist[destinazione] == 0:
         return None, 0
         
     path = []
-    curr = target
+    curr = destinazione
     while curr != -1:
         path.append(curr)
         curr = parent[curr]
     path.reverse()
-    return path, dist[target]
+    return path, dist[destinazione]
 
 
 def attempt_rebalance(failed, bal, C_half, eu, ev, n, k):
