@@ -22,30 +22,44 @@ def precompute_paths(G):
 # ─────────────────────────────────────────────────
 
 def get_best_cycle(meta_capacita_pubbliche, sorgente, destinazione, numNodi):
-    #Trovo il percorso con massima capacità stimata, usando un Widest Path con Euristica basata sulla metà della capacità pubblica
-    dist = np.zeros(numNodi, dtype=np.int64) #inizializzo un vettore c-level di capacità con n zeri, essenzialmente dentro dist[u] conservo la capacità stimata del percorso più capiente trovato finora per arrivare in u.
-    dist[sorgente] = np.iinfo(np.int64).max #ora il nodo sorgente ha capienza infinita
-    parent = np.full(numNodi, -1, dtype=np.int64) #inizializzo vettore dei predecessori per ricostruire il percorso, inizializzo a -1 per indicare che non c'è predecessore (sono identificati con indici)
-    visitati = np.zeros(numNodi, dtype=bool) #vettore booleano per memorizzare se un nodo è stato visitato
+    dist = [0] * numNodi
+    hops = [float('inf')] * numNodi  # <-- NUOVO: Tracciamo i salti
+    parent = [-1] * numNodi
     
-    for _ in range(numNodi):
-        # np.where vettorizzato per ignorare i nodi già visitati
-        capacita_non_visitati = np.where(visitati, -1, dist) #Imposto a -1 tutti i nodi già visitati 
-        u = np.argmax(capacita_non_visitati) #prende il nodo u con capacità massima tra i non visitati
-        max_capacita_corrente = capacita_non_visitati[u]
-                
-        if max_capacita_corrente <= 0 or u == destinazione:
+    dist[sorgente] = float('inf')
+    hops[sorgente] = 0
+    
+    # Nella tupla salviamo: (-capacita, hops, nodo)
+    # Python min-heap ordina da solo prima per capacità (negativa), e a parità di capacità per hops!
+    pq = [(-float('inf'), 0, sorgente)]
+    
+    while pq:
+        cap_neg, h, u = heapq.heappop(pq)
+        cap_attuale = -cap_neg
+        
+        # Ignoriamo percorsi peggiori O percorsi uguali ma più lunghi
+        if cap_attuale < dist[u] or (cap_attuale == dist[u] and h > hops[u]):
+            continue
+            
+        if u == destinazione:
             break
             
-        visitati[u] = True
+        # ESTREMA VELOCITÀ: Chiediamo a numpy di darci solo gli indici dei nodi collegati
+        # invece di fare un ciclo Python su tutti i 1000 nodi!
+        row = meta_capacita_pubbliche[u, :]
+        vicini_validi = np.nonzero(row)[0]
         
-        cap = meta_capacita_pubbliche[u, :]
-        proposed = np.minimum(dist[u], cap)
-        
-        update_mask = (~visitati) & (proposed > dist)
-        dist[update_mask] = proposed[update_mask]
-        parent[update_mask] = u
-        
+        for v in vicini_validi:
+            capacita_arco = row[v]
+            capacita_proposta = min(dist[u], capacita_arco)
+            
+            # AGGIORNIAMO SE: la capacità è migliore OPPURE se la capacità è uguale ma facciamo meno salti
+            if capacita_proposta > dist[v] or (capacita_proposta == dist[v] and h + 1 < hops[v]):
+                dist[v] = capacita_proposta
+                hops[v] = h + 1
+                parent[v] = u
+                heapq.heappush(pq, (-capacita_proposta, h + 1, v))
+                    
     if dist[destinazione] == 0:
         return None, 0
         
@@ -54,7 +68,9 @@ def get_best_cycle(meta_capacita_pubbliche, sorgente, destinazione, numNodi):
     while curr != -1:
         path.append(curr)
         curr = parent[curr]
+        
     path.reverse()
+    
     return path, dist[destinazione]
 
 
