@@ -91,6 +91,77 @@ def get_best_cycle(C_half, source, target, n):
     return path, dist[target]
 
 
+def attempt_rebalance(failed, bal, C_half, eu, ev, n, k):
+    """
+    Tenta di eseguire il JIT Circular Rebalancing Probabilistico per i canali falliti.
+    Restituisce (True, None) se il rebalancing ha successo per tutti i canali,
+    oppure (False, failed_edge) se fallisce.
+    """
+    resolved_all = True
+    failed_edge = None
+
+    for j in failed:
+        u, v = int(eu[j]), int(ev[j])
+        if min(bal[u, v], bal[v, u]) > 0:
+            continue  # Già risolto da un rebalance precedente
+        
+        # Identifichiamo la direzione svuotata: source -> target
+        if bal[u, v] == 0:
+            source, target = u, v
+        else:
+            source, target = v, u
+            
+        # BUG FIX CRITICO: Siccome C_half è statica, penserà sempre che l'arco diretto 
+        # source -> target sia capiente, e ci restituirà sempre quello come "Miglior Percorso"!
+        # Ma l'arco diretto è proprio quello svuotato! Dobbiamo "spegnerlo" temporaneamente
+        # per costringere l'algoritmo a cercare un percorso ALTERNATIVO (il vero ciclo).
+        temp_cap = C_half[source, target]
+        C_half[source, target] = 0
+            
+        # Cerchiamo il path più capiente stimato (usando C_half statica, privacy-preserving)
+        path_reb, est_cap = get_best_cycle(C_half, source, target, n)
+        
+        # Ripristiniamo la matrice per le prossime transazioni
+        C_half[source, target] = temp_cap
+        
+        if path_reb is None or est_cap < 1:
+            resolved_all = False
+            failed_edge = (u, v) if u < v else (v, u)
+            break
+            
+        # Proviamo a spostare l'importo stimato (limitato da k)
+        amount = min(k, est_cap)
+        
+        # VERIFICA SUI BILANCI REALI
+        # Controlliamo se i bilanci effettivi supportano la transazione.
+        # Se non la supportano, il probe fallisce e la rete si ferma.
+        can_route = True
+        for i in range(len(path_reb) - 1):
+            x, y = path_reb[i], path_reb[i + 1]
+            if bal[x, y] < amount:
+                can_route = False
+                break
+                
+        if can_route:
+            # Rebalance! Spostiamo liquidità lungo il ciclo
+            # 1. Routing lungo il network
+            for i in range(len(path_reb) - 1):
+                x, y = path_reb[i], path_reb[i + 1]
+                bal[x, y] -= amount
+                bal[y, x] += amount
+                
+            # 2. Chiusura del ciclo sul canale diretto per ristabilire i fondi
+            bal[target, source] -= amount
+            bal[source, target] += amount
+        else:
+            # Il rebalancing fallisce perché i bilanci reali non supportano la stima
+            resolved_all = False
+            failed_edge = (u, v) if u < v else (v, u)
+            break
+            
+    return resolved_all, failed_edge
+
+
 # ─────────────────────────────────────────────────
 #  Simulazione singola (Algorithm 1) — NumPy
 # ─────────────────────────────────────────────────
@@ -208,68 +279,8 @@ def simulate(G, k, alpha, M, paths, seed=42, rebalance_active=False):
                 j = failed[0]
                 return tau, (int(eu[j]), int(ev[j]))
             else:
-                # ── JIT Circular Rebalancing Probabilistico (Widest Path su C/2) ──
-                resolved_all = True
-                for j in failed:
-                    u, v = int(eu[j]), int(ev[j])
-                    if min(bal[u, v], bal[v, u]) > 0:
-                        continue  # Già risolto da un rebalance precedente
-                    
-                    # Identifichiamo la direzione svuotata: source -> target
-                    if bal[u, v] == 0:
-                        source, target = u, v
-                    else:
-                        source, target = v, u
-                        
-                    # BUG FIX CRITICO: Siccome C_half è statica, penserà sempre che l'arco diretto 
-                    # source -> target sia capiente, e ci restituirà sempre quello come "Miglior Percorso"!
-                    # Ma l'arco diretto è proprio quello svuotato! Dobbiamo "spegnerlo" temporaneamente
-                    # per costringere l'algoritmo a cercare un percorso ALTERNATIVO (il vero ciclo).
-                    temp_cap = C_half[source, target]
-                    C_half[source, target] = 0
-                        
-                    # Cerchiamo il path più capiente stimato (usando C_half statica, privacy-preserving)
-                    path_reb, est_cap = get_best_cycle(C_half, source, target, n)
-                    
-                    # Ripristiniamo la matrice per le prossime transazioni
-                    C_half[source, target] = temp_cap
-                    
-                    if path_reb is None or est_cap < 1:
-                        resolved_all = False
-                        failed_edge = (u, v) if u < v else (v, u)
-                        break
-                        
-                    # Proviamo a spostare l'importo stimato (limitato da k)
-                    amount = min(k, est_cap)
-                    
-                    # VERIFICA SUI BILANCI REALI
-                    # Controlliamo se i bilanci effettivi supportano la transazione.
-                    # Se non la supportano, il probe fallisce e la rete si ferma.
-                    can_route = True
-                    for i in range(len(path_reb) - 1):
-                        x, y = path_reb[i], path_reb[i + 1]
-                        if bal[x, y] < amount:
-                            can_route = False
-                            break
-                            
-                    if can_route:
-                        # Rebalance! Spostiamo liquidità lungo il ciclo
-                        # 1. Routing lungo il network
-                        for i in range(len(path_reb) - 1):
-                            x, y = path_reb[i], path_reb[i + 1]
-                            bal[x, y] -= amount
-                            bal[y, x] += amount
-                            
-                        # 2. Chiusura del ciclo sul canale diretto per ristabilire i fondi
-                        bal[target, source] -= amount
-                        bal[source, target] += amount
-                    else:
-                        # Il rebalancing fallisce perché i bilanci reali non supportano la stima
-                        resolved_all = False
-                        failed_edge = (u, v) if u < v else (v, u)
-                        break
-                        
-                if not resolved_all:
+                success, failed_edge = attempt_rebalance(failed, bal, C_half, eu, ev, n, k)
+                if not success:
                     return tau, failed_edge
 
         # La transazione è stata incamerata senza svuotare nessun canale!
