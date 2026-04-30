@@ -1,6 +1,7 @@
 import random
 import numpy as np
 import networkx as nx
+import heapq
 # ─────────────────────────────────────────────────
 #  Pre-calcolo shortest path (una volta per grafo)
 # ─────────────────────────────────────────────────
@@ -269,3 +270,31 @@ def simulate(G, k, alpha, M, paths, seed=42, rebalance_active=False):
         # La transazione è stata incamerata senza svuotare nessun canale!
         tau += 1
 
+if __name__ == "__main__":
+    print("--- TEST SHORTEST-WIDEST PATH ---")
+    
+    num_nodi = 5
+    # Creiamo una matrice di adiacenza vuota (Numpy)
+    meta = np.zeros((num_nodi, num_nodi), dtype=np.int64)
+    
+    # 1. Percorso LUNGO (3 salti) con collo di bottiglia = 20
+    # 0 -> 1 -> 2 -> 3
+    meta[0, 1] = 20
+    meta[1, 2] = 20
+    meta[2, 3] = 20
+    
+    # 2. Percorso CORTO (2 salti) con lo STESSO collo di bottiglia = 20
+    # 0 -> 4 -> 3
+    meta[0, 4] = 20
+    meta[4, 3] = 20
+    
+    # Eseguiamo la funzione (da 0 a 3)
+    path, cap = get_best_cycle(meta, 0, 3, num_nodi)
+    
+    print(f"Capacità massima trovata: {cap} (Atteso: 20)")
+    print(f"Percorso selezionato: {path}")
+    
+    if path == [0, 4, 3]:
+        print("✅ TEST SUPERATO: Ha scelto il percorso più corto a parità di capacità!")
+    else:
+        print("❌ TEST FALLITO: Ha preso il percorso sbagliato!")
