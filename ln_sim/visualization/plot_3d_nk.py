@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 def generate_3d_nk_plot():
-    data_path = "data_multi/B_tau_vs_k_summary.csv"
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    data_path = os.path.join(base_dir, "..", "..", "data", "dumbbell", "B_tau_vs_k_summary.csv")
     if not os.path.exists(data_path):
         print(f"File {data_path} non trovato!")
         return
@@ -74,8 +75,9 @@ def generate_3d_nk_plot():
     # Angolazione custom per vedere bene lo scivolo della k
     ax.view_init(elev=20, azim=-120)
     
-    os.makedirs("plots_multi", exist_ok=True)
-    out_path = "plots_multi/3D_NK_Alpha05_Surface.png"
+    plots_dir = os.path.join(base_dir, "..", "..", "results", "img")
+    os.makedirs(plots_dir, exist_ok=True)
+    out_path = os.path.join(plots_dir, "3D_NK_Alpha05_Surface.png")
     plt.savefig(out_path, dpi=300, bbox_inches='tight')
     print(f"Grafico 3D (n, k, tau) Salvato in: {out_path}")
 

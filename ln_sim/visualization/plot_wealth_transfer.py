@@ -10,7 +10,7 @@ from ln_sim.graphs import make_clique
 from ln_sim.core import precompute_paths
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PLOTS_DIR = os.path.join(BASE_DIR, "plots_dynamic")
+PLOTS_DIR = os.path.join(BASE_DIR, "..", "..", "results", "plots_dynamic")
 
 def simulate_track_wealth(n=100, k=50, alpha=0.4, seed=42):
     print(f"Esecuzione simulazione Clique N={n}, alpha={alpha}...")

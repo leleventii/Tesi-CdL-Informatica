@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 def generate_3d_plot():
-    data_path = "data/S_scaling_summary.csv"
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    data_path = os.path.join(base_dir, "..", "..", "data", "scaling", "S_scaling_summary.csv")
     if not os.path.exists(data_path):
         print(f"File {data_path} non trovato!")
         return
@@ -66,8 +67,9 @@ def generate_3d_plot():
     # Miglioriamo la telecamera
     ax.view_init(elev=30, azim=230)
     
-    os.makedirs("plots", exist_ok=True)
-    out_path = "plots/3D_Alpha_Sink_Surface.png"
+    plots_dir = os.path.join(base_dir, "..", "..", "results", "img")
+    os.makedirs(plots_dir, exist_ok=True)
+    out_path = os.path.join(plots_dir, "3D_Alpha_Sink_Surface.png")
     plt.savefig(out_path, dpi=300, bbox_inches='tight')
     print(f"Grafico 3D Salvato: {out_path}")
 
