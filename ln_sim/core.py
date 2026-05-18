@@ -18,68 +18,13 @@ def precompute_paths(G):
     return paths
 
 
-# ─────────────────────────────────────────────────
-#  Algoritmo di Rebalancing Probabilistico (Widest Path su C/2)
-# ─────────────────────────────────────────────────
 
-def get_best_cycle(meta_capacita_pubbliche, sorgente, destinazione, numNodi):
-    dist = [0] * numNodi
-    hops = [float('inf')] * numNodi  # <-- NUOVO: Tracciamo i salti
-    parent = [-1] * numNodi
-    
-    dist[sorgente] = float('inf')
-    hops[sorgente] = 0
-    
-    # Nella tupla salviamo: (-capacita, hops, nodo)
-    # Python min-heap ordina da solo prima per capacità (negativa), e a parità di capacità per hops!
-    pq = [(-float('inf'), 0, sorgente)]
-    
-    while pq:
-        cap_neg, h, u = heapq.heappop(pq)
-        cap_attuale = -cap_neg
-        
-        # Ignoriamo percorsi peggiori O percorsi uguali ma più lunghi
-        if cap_attuale < dist[u] or (cap_attuale == dist[u] and h > hops[u]):
-            continue
-            
-        if u == destinazione:
-            break
-            
-        # ESTREMA VELOCITÀ: Chiediamo a numpy di darci solo gli indici dei nodi collegati
-        # invece di fare un ciclo Python su tutti i 1000 nodi!
-        row = meta_capacita_pubbliche[u, :]
-        vicini_validi = np.nonzero(row)[0]
-        
-        for v in vicini_validi:
-            capacita_arco = row[v]
-            capacita_proposta = min(dist[u], capacita_arco)
-            
-            # AGGIORNIAMO SE: la capacità è migliore OPPURE se la capacità è uguale ma facciamo meno salti
-            if capacita_proposta > dist[v] or (capacita_proposta == dist[v] and h + 1 < hops[v]):
-                dist[v] = capacita_proposta
-                hops[v] = h + 1
-                parent[v] = u
-                heapq.heappush(pq, (-capacita_proposta, h + 1, v))
-                    
-    if dist[destinazione] == 0:
-        return None, 0
-        
-    path = []
-    curr = destinazione
-    while curr != -1:
-        path.append(curr)
-        curr = parent[curr]
-        
-    path.reverse()
-    
-    return path, dist[destinazione]
-
-
-def attempt_rebalance(failed, bal, C_half, eu, ev, n, k):
+def attempt_merchant_rebalance(failed, bal, eu, ev, M_set, G):
     """
-    Tenta di eseguire il JIT Circular Rebalancing Probabilistico per i canali falliti.
-    Restituisce (True, None) se il rebalancing ha successo per tutti i canali,
-    oppure (False, failed_edge) se fallisce.
+    Tenta di eseguire il Rebalancing guidato dal Merchant.
+    Quando un canale verso un merchant si svuota, il merchant orchestra un ciclo
+    drenando liquidità da un cliente con bilancio favorevole e re-iniettandola
+    nel canale svuotato.
     """
     resolved_all = True
     failed_edge = None
@@ -87,58 +32,70 @@ def attempt_rebalance(failed, bal, C_half, eu, ev, n, k):
     for j in failed:
         u, v = int(eu[j]), int(ev[j])
         if min(bal[u, v], bal[v, u]) > 0:
-            continue  # Già risolto da un rebalance precedente
-        
-        # Identifichiamo la direzione svuotata: source -> target
+            continue
+            
         if bal[u, v] == 0:
             source, target = u, v
         else:
             source, target = v, u
             
-        # BUG FIX CRITICO: Siccome C_half è statica, penserà sempre che l'arco diretto 
-        # source -> target sia capiente, e ci restituirà sempre quello come "Miglior Percorso"!
-        # Ma l'arco diretto è proprio quello svuotato! Dobbiamo "spegnerlo" temporaneamente
-        # per costringere l'algoritmo a cercare un percorso ALTERNATIVO (il vero ciclo).
-        temp_cap = C_half[source, target]
-        C_half[source, target] = 0
-            
-        # Cerchiamo il path più capiente stimato (usando C_half statica, privacy-preserving)
-        path_reb, est_cap = get_best_cycle(C_half, source, target, n)
-        
-        # Ripristiniamo la matrice per le prossime transazioni
-        C_half[source, target] = temp_cap
-        
-        if path_reb is None or est_cap < 1:
+        # source ha bilancio 0 verso target.
+        if target in M_set:
+            m = target
+            c = source
+        elif source in M_set:
+            m = source
+            c = target
+        else:
             resolved_all = False
             failed_edge = (u, v) if u < v else (v, u)
             break
             
-        # Proviamo a spostare l'importo stimato (limitato da k)
-        amount = min(k, est_cap)
+        # Il merchant 'm' cerca il vicino 'w' che ha più fondi verso di lui (cioè bal[m, w] minimo)
+        neighbors = list(G.neighbors(m))
+        if c in neighbors:
+            neighbors.remove(c)
+            
+        if not neighbors:
+            resolved_all = False
+            failed_edge = (u, v) if u < v else (v, u)
+            break
+            
+        w_opt = min(neighbors, key=lambda w: bal[m, w])
         
-        # VERIFICA SUI BILANCI REALI
-        # Controlliamo se i bilanci effettivi supportano la transazione.
-        # Se non la supportano, il probe fallisce e la rete si ferma.
+        # Percorso da c a w_opt escludendo gli altri merchant
+        nodes_to_remove = M_set.difference({c, w_opt})
+        G_sub = G.copy()
+        G_sub.remove_nodes_from(nodes_to_remove)
+        
+        try:
+            path_c_w = nx.shortest_path(G_sub, c, w_opt)
+        except nx.NetworkXNoPath:
+            resolved_all = False
+            failed_edge = (u, v) if u < v else (v, u)
+            break
+            
+        # Verifica liquidità reale per 1 Satoshi
         can_route = True
-        for i in range(len(path_reb) - 1):
-            x, y = path_reb[i], path_reb[i + 1]
-            if bal[x, y] < amount:
+        if bal[m, c] < 1: can_route = False
+        for i in range(len(path_c_w) - 1):
+            x, y = path_c_w[i], path_c_w[i+1]
+            if bal[x, y] < 1:
                 can_route = False
                 break
-                
+        if bal[w_opt, m] < 1: can_route = False
+        
         if can_route:
-            # Rebalance! Spostiamo liquidità lungo il ciclo
-            # 1. Routing lungo il network
-            for i in range(len(path_reb) - 1):
-                x, y = path_reb[i], path_reb[i + 1]
-                bal[x, y] -= amount
-                bal[y, x] += amount
-                
-            # 2. Chiusura del ciclo sul canale diretto per ristabilire i fondi
-            bal[target, source] -= amount
-            bal[source, target] += amount
+            # Rebalance di 1 Satoshi
+            bal[m, c] -= 1
+            bal[c, m] += 1
+            for i in range(len(path_c_w) - 1):
+                x, y = path_c_w[i], path_c_w[i+1]
+                bal[x, y] -= 1
+                bal[y, x] += 1
+            bal[w_opt, m] -= 1
+            bal[m, w_opt] += 1
         else:
-            # Il rebalancing fallisce perché i bilanci reali non supportano la stima
             resolved_all = False
             failed_edge = (u, v) if u < v else (v, u)
             break
@@ -150,7 +107,7 @@ def attempt_rebalance(failed, bal, C_half, eu, ev, n, k):
 #  Simulazione singola (Algorithm 1) — NumPy
 # ─────────────────────────────────────────────────
 
-def simulate(G, k, alpha, M, paths, seed=42, rebalance_active=False):
+def simulate(G, k, alpha, M, paths, seed=42, rebalance_mode="none"):
     """
     Esegue UNA singola simulazione della rete di canali di pagamento (PCN).
 
@@ -162,7 +119,7 @@ def simulate(G, k, alpha, M, paths, seed=42, rebalance_active=False):
     M      : list       Lista dei nodi classificati come Merchant.
     paths  : dict       Dizionario dei percorsi minimi pre-calcolati (da precompute_paths).
     seed   : int        Seme per il generatore di numeri pseudocasuali, garantisce la riproducibilità.
-    rebalance_active : bool  Se True, abilita il JIT Circular Rebalancing probabilistico privacy-preserving.
+    rebalance_mode : str  'none', o 'merchant' per selezionare la strategia.
 
     Returns
     -------
@@ -177,14 +134,12 @@ def simulate(G, k, alpha, M, paths, seed=42, rebalance_active=False):
     nodes = list(G.nodes())
     n = len(nodes)
     m_list = list(M)
+    M_set = set(m_list)
 
     # ── Inizializzazione Bilanci (Matrice NumPy n×n) ──
     # bal[u, v] rappresenta quanti bitcoin 'u' possiede e può ancora inviare verso 'v'.
     # Matrice int64 per accesso O(1) e check vettorizzato.
     bal = np.zeros((n, n), dtype=np.int64)
-    
-    # Matrice statica C_half per rebalancing probabilistico (C[u,v] / 2)
-    C_half = np.zeros((n, n), dtype=np.int64)
 
     # Array di indici degli archi canonici (u < v) per il check vettorizzato
     eu_list = []  # indici u di ogni arco
@@ -200,8 +155,6 @@ def simulate(G, k, alpha, M, paths, seed=42, rebalance_active=False):
             
         bal[a, b] = k
         bal[b, a] = k
-        C_half[a, b] = cap_val
-        C_half[b, a] = cap_val
         
         eu_list.append(a)
         ev_list.append(b)
@@ -259,42 +212,13 @@ def simulate(G, k, alpha, M, paths, seed=42, rebalance_active=False):
         failed = np.flatnonzero(bmin == 0)
         
         if failed.size > 0:
-            if not rebalance_active:
+            if rebalance_mode == "none":
                 j = failed[0]
                 return tau, (int(eu[j]), int(ev[j]))
-            else:
-                success, failed_edge = attempt_rebalance(failed, bal, C_half, eu, ev, n, k)
+            elif rebalance_mode == "merchant":
+                success, failed_edge = attempt_merchant_rebalance(failed, bal, eu, ev, M_set, G)
                 if not success:
                     return tau, failed_edge
 
         # La transazione è stata incamerata senza svuotare nessun canale!
         tau += 1
-
-if __name__ == "__main__":
-    print("--- TEST SHORTEST-WIDEST PATH ---")
-    
-    num_nodi = 5
-    # Creiamo una matrice di adiacenza vuota (Numpy)
-    meta = np.zeros((num_nodi, num_nodi), dtype=np.int64)
-    
-    # 1. Percorso LUNGO (3 salti) con collo di bottiglia = 20
-    # 0 -> 1 -> 2 -> 3
-    meta[0, 1] = 20
-    meta[1, 2] = 20
-    meta[2, 3] = 20
-    
-    # 2. Percorso CORTO (2 salti) con lo STESSO collo di bottiglia = 20
-    # 0 -> 4 -> 3
-    meta[0, 4] = 20
-    meta[4, 3] = 20
-    
-    # Eseguiamo la funzione (da 0 a 3)
-    path, cap = get_best_cycle(meta, 0, 3, num_nodi)
-    
-    print(f"Capacità massima trovata: {cap} (Atteso: 20)")
-    print(f"Percorso selezionato: {path}")
-    
-    if path == [0, 4, 3]:
-        print("✅ TEST SUPERATO: Ha scelto il percorso più corto a parità di capacità!")
-    else:
-        print("❌ TEST FALLITO: Ha preso il percorso sbagliato!")

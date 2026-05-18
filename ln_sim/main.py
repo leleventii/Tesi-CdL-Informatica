@@ -12,8 +12,8 @@ Uso:
 import argparse
 import time
 
-from .runner import run_exp_A, run_exp_B, run_exp_C, run_exp_D
-from .plots import generate_all_plots
+from .runners.runner import run_exp_A, run_exp_B, run_exp_C, run_exp_D
+from .visualization.plots import generate_all_plots
 
 
 def main():
@@ -42,7 +42,7 @@ def main():
     if args.plot_only:
         print("  Modalità: solo grafici")
         generate_all_plots()
-        from .runner_scaling import plot_scaling
+        from .runners.runner_scaling import plot_scaling
         plot_scaling()
         return
 
@@ -52,7 +52,7 @@ def main():
 
     t0 = time.time()
 
-    from .runner_scaling import run_exp_scaling
+    from .runners.runner_scaling import run_exp_scaling
     dispatch = {"A": run_exp_A, "B": run_exp_B,
                 "C": run_exp_C, "D": run_exp_D,
                 "S": run_exp_scaling}
@@ -69,7 +69,7 @@ def main():
     generate_all_plots()
 
     # Genera grafici scaling
-    from .runner_scaling import plot_scaling
+    from .runners.runner_scaling import plot_scaling
     plot_scaling()
 
 
