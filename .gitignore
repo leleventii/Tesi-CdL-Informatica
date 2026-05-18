@@ -1,3 +1,22 @@
-data_snapshot/*.json
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
-data_snapshot/snapshot_260323.json
+# Virtual Environments
+venv/
+env/
+ENV/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Data files (snapshots)
+data/snapshot/*.json
+archive_v2/data_snapshot/*.json
